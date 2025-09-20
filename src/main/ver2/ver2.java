@@ -7,6 +7,18 @@ import java.util.stream.*;
 import java.time.*;
 import java.io.*;
 
+/**
+ * PTK-HUIM-U±: Corrected Parallel Top-K High-Utility Itemset Mining
+ * from Uncertain Databases with Positive and Negative Utilities
+ *
+ * MODIFICATION:
+ * 1. đơn giản hóa thuật toán bằng cách loại bỏ việc theo dõi riêng biệt PTU/NTU
+ * 2. thay đổi cách tính RTWU (không nhân với xác suất)
+ * 3. thay đổi Ngưỡng lọc item theo xác suất (exclude minPro * rawDatabase.size())
+ *
+ * @author Elio
+ * @version 2.0
+ */
 public class ver2 {
     private final Map<Integer, Double> itemProfits;
     private final int k;
@@ -959,14 +971,7 @@ public class ver2 {
         Map<Integer, Double> profits = readProfitTable(profitFile);
         List<Transaction> database = readDatabase(dbFile);
 
-        System.out.println("=== PTK-HUIM-U± Corrected (Sound, Complete, and PARALLEL) ===");
-        System.out.println("Corrections applied:");
-        System.out.println("1. Fixed RTWU-based item ordering (was incorrectly using item-id)");
-        System.out.println("2. Implemented proper two-pass initialization");
-        System.out.println("3. Removed unproven probability decay pruning");
-        System.out.println("4. Implemented log-space probability computation");
-        System.out.println("5. All pruning strategies are mathematically proven");
-        System.out.println("6. FIXED: Actually uses ForkJoinPool for parallel processing");
+        System.out.println("=== PTK-HUIM-U± ===");
         System.out.println();
 
         // Run corrected algorithm

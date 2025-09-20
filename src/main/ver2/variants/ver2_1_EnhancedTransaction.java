@@ -1,3 +1,5 @@
+package main.ver2.variants;
+
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -9,18 +11,9 @@ import java.io.*;
  * PTK-HUIM-U±: Corrected Parallel Top-K High-Utility Itemset Mining
  * from Uncertain Databases with Positive and Negative Utilities
  *
- * CORRECTIONS APPLIED:
- * 1. Fixed RTWU-based item ordering (previously sorted by item-id incorrectly)
- * 2. Implemented proper two-pass initialization with RTWU ordering
- * 3. Removed unproven probability decay pruning
- * 4. Implemented log-space probability computation to prevent underflow
- * 5. Maintained all mathematically proven pruning strategies
- * 6. FIXED: Actually uses ForkJoinPool for parallel processing
- *
- * @author Corrected Implementation with Parallel Processing
- * @version 8.0 - Proper Parallelization Fixed
+ * @version 2.1 - EnhancedTransaction modify
  */
-public class ver10_1 {
+class ver2_1 {
     private final Map<Integer, Double> itemProfits;
     private final int k;
     private final double minPro;
@@ -420,7 +413,7 @@ public class ver10_1 {
             EnhancedUtilityList extension = extensions.get(index);
 
             // Join to create new utility-list
-            EnhancedUtilityList joined = ver10_1.this.join(prefix, extension);
+            EnhancedUtilityList joined = ver2_1.this.join(prefix, extension);
 
             if (joined == null || joined.elements.isEmpty()) {
                 return;
@@ -461,7 +454,7 @@ public class ver10_1 {
 
     // ==================== MAIN ALGORITHM ====================
 
-    public ver10_1(Map<Integer, Double> itemProfits, int k, double minPro) {
+    public ver2_1(Map<Integer, Double> itemProfits, int k, double minPro) {
         this.itemProfits = Collections.unmodifiableMap(new HashMap<>(itemProfits));
         this.k = k;
         this.minPro = minPro;
@@ -1033,7 +1026,7 @@ public class ver10_1 {
         System.out.println();
 
         // Run corrected algorithm
-        ver10_1 algorithm = new ver10_1(profits, k, minPro);
+        ver2_1 algorithm = new ver2_1(profits, k, minPro);
         List<Itemset> topK = algorithm.mine(database);
 
         // Display results
