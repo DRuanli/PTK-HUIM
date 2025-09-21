@@ -14,10 +14,6 @@ import java.io.*;
  * VERSION 5.0 IMPROVEMENTS:
  * 1. Removed all duplicate/redundant code
  * 2. Unified parallel/sequential execution
- * 3. Centralized pruning strategies
- * 4. Simplified TopK management
- * 5. Optimized memory allocation
- * 6. Removed unused monitoring code
  *
  * @author Optimized Implementation
  * @version 5.0
