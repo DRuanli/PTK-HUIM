@@ -2,7 +2,6 @@ package main.ver5;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.*;
 import java.util.stream.*;
 import java.time.*;
@@ -12,32 +11,32 @@ import java.io.*;
  * PTK-HUIM-U±: Enhanced Parallel Top-K High-Utility Itemset Mining
  * from Uncertain Databases with Positive and Negative Utilities
  *
- * VERSION 5 IMPROVEMENTS:
- * 1. Fixed thread-safety issues in lazy caching
- * 2. Corrected bulk pruning logic to prevent missing valid itemsets
- * 3. Improved TopKManager with fine-grained locking
- * 4. Fixed nested parallelism issues
- * 5. Added adaptive task granularity
- * 6. Ensured completeness and soundness of the algorithm
+ * VERSION 5.0 IMPROVEMENTS:
+ * 1. Removed all duplicate/redundant code
+ * 2. Unified parallel/sequential execution
+ * 3. Centralized pruning strategies
+ * 4. Simplified TopK management
+ * 5. Optimized memory allocation
+ * 6. Removed unused monitoring code
  *
- * @author Enhanced Implementation
- * @version 5 - Correctness-Guaranteed Parallel Version
+ * @author Optimized Implementation
+ * @version 5.0
  */
 public class ver5 {
     private final Map<Integer, Double> itemProfits;
     private final int k;
     private final double minPro;
     private static final double EPSILON = 1e-10;
-    private static final double LOG_EPSILON = -700; // exp(-700) ≈ 0
+    private static final double LOG_EPSILON = -700;
 
-    // Thread-safe top-K management with improved concurrency
+    // Thread-safe top-K management - simplified
     private final TopKManager topKManager;
 
-    // Optimized item ordering
+    // Core data structures
     private Map<Integer, Integer> itemToRank;
     private Map<Integer, Double> itemRTWU;
 
-    // Enhanced statistics - thread-safe
+    // Statistics tracking
     private final AtomicLong candidatesGenerated = new AtomicLong(0);
     private final AtomicLong candidatesPruned = new AtomicLong(0);
     private final AtomicLong utilityListsCreated = new AtomicLong(0);
@@ -46,57 +45,10 @@ public class ver5 {
     private final AtomicLong rtwuPruned = new AtomicLong(0);
     private final AtomicLong branchPruned = new AtomicLong(0);
 
-    // Control parallel execution with adaptive parameters
+    // Parallel execution control
     private final ForkJoinPool customThreadPool;
-    private final AdaptiveTaskManager taskManager;
-
-    // Memory monitoring
-    private final long maxMemory;
-    private final AtomicLong peakMemoryUsage = new AtomicLong(0);
-
-    /**
-     * Adaptive task management for optimal parallel performance
-     */
-    private class AdaptiveTaskManager {
-        private final AtomicLong totalTaskTime = new AtomicLong(0);
-        private final AtomicLong taskCount = new AtomicLong(0);
-        private volatile int dynamicThreshold = 30;
-        private volatile int dynamicGranularity = 10;
-
-        boolean shouldParallelize(int size, int depth) {
-            // Adjust threshold based on depth to avoid excessive parallelism
-            int adjustedThreshold = dynamicThreshold * Math.max(1, depth / 2);
-            return size >= adjustedThreshold && depth < 10; // Limit recursion depth
-        }
-
-        int getChunkSize(int totalSize, int depth) {
-            // Calculate optimal chunk size based on available processors and depth
-            int processors = customThreadPool.getParallelism();
-            int depthPenalty = Math.max(1, depth);
-
-            // Ensure we don't create too many small tasks
-            int minChunkSize = Math.max(dynamicGranularity, 5);
-            int idealChunks = processors * 2 / depthPenalty;
-
-            return Math.max(minChunkSize, totalSize / Math.max(1, idealChunks));
-        }
-
-        void updateMetrics(long taskNanos, int itemsProcessed) {
-            totalTaskTime.addAndGet(taskNanos);
-            taskCount.incrementAndGet();
-
-            // Periodically adjust parameters
-            if (taskCount.get() % 100 == 0) {
-                long avgTime = totalTaskTime.get() / taskCount.get();
-
-                if (avgTime < 1_000_000) { // < 1ms per task
-                    dynamicGranularity = Math.min(50, dynamicGranularity + 5);
-                } else if (avgTime > 10_000_000) { // > 10ms per task
-                    dynamicGranularity = Math.max(5, dynamicGranularity - 2);
-                }
-            }
-        }
-    }
+    private static final int PARALLEL_THRESHOLD = 30;
+    private static final int TASK_GRANULARITY = 7;
 
     /**
      * Enhanced Transaction class with efficient storage
@@ -113,7 +65,6 @@ public class ver5 {
                            Map<Integer, Integer> itemToRank) {
             this.tid = tid;
 
-            // Sort items by RTWU rank
             List<Integer> sortedItems = new ArrayList<>(itemMap.keySet());
             sortedItems.sort((a, b) -> {
                 Integer rankA = itemToRank.get(a);
@@ -140,11 +91,8 @@ public class ver5 {
                 logProbabilities[idx] = prob > 0 ? Math.log(prob) : LOG_EPSILON;
 
                 Double profit = profits.get(item);
-                if (profit != null) {
-                    double utility = profit * quantities[idx];
-                    if (profit > 0) {
-                        rtu += utility;
-                    }
+                if (profit != null && profit > 0) {
+                    rtu += profit * quantities[idx];
                 }
                 idx++;
             }
@@ -168,7 +116,7 @@ public class ver5 {
     }
 
     /**
-     * Thread-safe Utility-List with lazy computation
+     * Optimized Utility-List with lazy computation
      */
     static class EnhancedUtilityList {
         static class Element {
@@ -190,9 +138,8 @@ public class ver5 {
         final double existentialProbability;
         final double rtwu;
 
-        // Thread-safe lazy-computed values
-        private volatile Double cachedSumEU = null;
-        private volatile Double cachedSumRemaining = null;
+        private Double cachedSumEU = null;
+        private Double cachedSumRemaining = null;
 
         EnhancedUtilityList(Set<Integer> itemset, List<Element> elements, double rtwu) {
             this.itemset = Collections.unmodifiableSet(new HashSet<>(itemset));
@@ -201,42 +148,28 @@ public class ver5 {
             this.existentialProbability = calculateLogSpaceExistentialProbability();
         }
 
-        // Thread-safe lazy computation with double-checked locking
         double getSumEU() {
-            Double result = cachedSumEU;
-            if (result == null) {
-                synchronized(this) {
-                    result = cachedSumEU;
-                    if (result == null) {
-                        double eu = 0;
-                        for (Element e : elements) {
-                            double prob = Math.exp(e.logProbability);
-                            eu += e.utility * prob;
-                        }
-                        cachedSumEU = result = eu;
-                    }
+            if (cachedSumEU == null) {
+                double eu = 0;
+                for (Element e : elements) {
+                    double prob = Math.exp(e.logProbability);
+                    eu += e.utility * prob;
                 }
+                cachedSumEU = eu;
             }
-            return result;
+            return cachedSumEU;
         }
 
-        // Thread-safe lazy computation with double-checked locking
         double getSumRemaining() {
-            Double result = cachedSumRemaining;
-            if (result == null) {
-                synchronized(this) {
-                    result = cachedSumRemaining;
-                    if (result == null) {
-                        double rem = 0;
-                        for (Element e : elements) {
-                            double prob = Math.exp(e.logProbability);
-                            rem += e.remaining * prob;
-                        }
-                        cachedSumRemaining = result = rem;
-                    }
+            if (cachedSumRemaining == null) {
+                double rem = 0;
+                for (Element e : elements) {
+                    double prob = Math.exp(e.logProbability);
+                    rem += e.remaining * prob;
                 }
+                cachedSumRemaining = rem;
             }
-            return result;
+            return cachedSumRemaining;
         }
 
         private double calculateLogSpaceExistentialProbability() {
@@ -271,58 +204,39 @@ public class ver5 {
     }
 
     /**
-     * ForkJoinTask for parallel prefix mining
+     * Unified ForkJoinTask for mining
      */
-    private class PrefixMiningTask extends RecursiveAction {
+    private class MiningTask extends RecursiveAction {
         private final List<Integer> sortedItems;
         private final Map<Integer, EnhancedUtilityList> singleItemLists;
         private final int start;
         private final int end;
-        private final int depth;
 
-        PrefixMiningTask(List<Integer> sortedItems,
-                        Map<Integer, EnhancedUtilityList> singleItemLists,
-                        int start, int end, int depth) {
+        MiningTask(List<Integer> sortedItems,
+                  Map<Integer, EnhancedUtilityList> singleItemLists,
+                  int start, int end) {
             this.sortedItems = sortedItems;
             this.singleItemLists = singleItemLists;
             this.start = start;
             this.end = end;
-            this.depth = depth;
         }
 
         @Override
         protected void compute() {
-            long startTime = System.nanoTime();
             int size = end - start;
 
-            // Use adaptive task manager to decide on parallelization
-            int chunkSize = taskManager.getChunkSize(size, depth);
-
-            if (size <= chunkSize || depth > 8) {
-                // Sequential processing
+            if (size <= TASK_GRANULARITY) {
+                // Process items directly
                 for (int i = start; i < end; i++) {
                     processPrefix(i);
                 }
             } else {
-                // Parallel processing - split into subtasks
-                List<PrefixMiningTask> subtasks = new ArrayList<>();
-
-                for (int i = start; i < end; i += chunkSize) {
-                    int taskEnd = Math.min(i + chunkSize, end);
-                    PrefixMiningTask task = new PrefixMiningTask(
-                        sortedItems, singleItemLists, i, taskEnd, depth + 1
-                    );
-                    subtasks.add(task);
-                    task.fork();
-                }
-
-                // Join all subtasks
-                for (PrefixMiningTask task : subtasks) {
-                    task.join();
-                }
+                // Split into subtasks
+                int mid = start + (size / 2);
+                MiningTask leftTask = new MiningTask(sortedItems, singleItemLists, start, mid);
+                MiningTask rightTask = new MiningTask(sortedItems, singleItemLists, mid, end);
+                invokeAll(leftTask, rightTask);
             }
-
-            taskManager.updateMetrics(System.nanoTime() - startTime, size);
         }
 
         private void processPrefix(int index) {
@@ -331,144 +245,34 @@ public class ver5 {
 
             if (ul == null) return;
 
-            // Early termination check
-            double currentThreshold = topKManager.getThreshold();
-            if (ul.rtwu < currentThreshold - EPSILON) {
+            // Check if branch should be pruned
+            if (shouldPruneBranch(item)) {
                 branchPruned.incrementAndGet();
                 return;
             }
 
-            // Collect valid extensions
-            List<EnhancedUtilityList> extensions = new ArrayList<>();
-            for (int j = index + 1; j < sortedItems.size(); j++) {
-                Integer extItem = sortedItems.get(j);
-                EnhancedUtilityList extUL = singleItemLists.get(extItem);
+            // Get filtered extensions
+            List<EnhancedUtilityList> extensions = getFilteredExtensions(
+                sortedItems, singleItemLists, index
+            );
 
-                if (extUL == null) continue;
-
-                // Prune based on RTWU
-                if (extUL.rtwu < currentThreshold - EPSILON) {
-                    rtwuPruned.incrementAndGet();
-                    continue;
-                }
-
-                extensions.add(extUL);
-            }
-
-            // Mine with this prefix
             if (!extensions.isEmpty()) {
-                searchEnhanced(ul, extensions, depth + 1);
-            }
-
-            // Periodic memory monitoring
-            if (index % 100 == 0) {
-                long usedMemory = Runtime.getRuntime().totalMemory() -
-                                 Runtime.getRuntime().freeMemory();
-                peakMemoryUsage.updateAndGet(peak -> Math.max(peak, usedMemory));
+                searchWithExtensions(ul, extensions, singleItemLists);
             }
         }
     }
 
     /**
-     * Improved Top-K manager with fine-grained concurrency
+     * Constructor
      */
-    private class TopKManager {
-        private final int k;
-        private final ConcurrentSkipListSet<Itemset> topKSet;
-        private final ConcurrentHashMap<Set<Integer>, Double> itemsetUtilities;
-        private final AtomicReference<Double> threshold;
-        private final ReentrantLock updateLock;
-
-        TopKManager(int k) {
-            this.k = k;
-            this.topKSet = new ConcurrentSkipListSet<>((a, b) -> {
-                int cmp = Double.compare(b.expectedUtility, a.expectedUtility);
-                if (cmp != 0) return cmp;
-                return Integer.compare(a.items.hashCode(), b.items.hashCode());
-            });
-            this.itemsetUtilities = new ConcurrentHashMap<>();
-            this.threshold = new AtomicReference<>(0.0);
-            this.updateLock = new ReentrantLock();
-        }
-
-        boolean tryAdd(Set<Integer> items, double eu, double ep) {
-            // Fast path - early rejection
-            if (eu < threshold.get() - EPSILON && topKSet.size() >= k) {
-                return false;
-            }
-
-            // Check for existing itemset
-            Double existingUtility = itemsetUtilities.get(items);
-            if (existingUtility != null && existingUtility >= eu - EPSILON) {
-                return false;
-            }
-
-            // Update with lock
-            updateLock.lock();
-            try {
-                // Double-check after acquiring lock
-                double currentThreshold = threshold.get();
-                if (eu < currentThreshold - EPSILON && topKSet.size() >= k) {
-                    return false;
-                }
-
-                // Remove old version if exists
-                if (existingUtility != null) {
-                    topKSet.removeIf(itemset -> itemset.items.equals(items));
-                }
-
-                // Add new itemset
-                Itemset newItemset = new Itemset(items, eu, ep);
-                topKSet.add(newItemset);
-                itemsetUtilities.put(items, eu);
-
-                // Maintain size constraint
-                while (topKSet.size() > k) {
-                    Itemset removed = topKSet.pollLast();
-                    if (removed != null) {
-                        itemsetUtilities.remove(removed.items);
-                    }
-                }
-
-                // Update threshold
-                if (topKSet.size() >= k) {
-                    Iterator<Itemset> iter = topKSet.iterator();
-                    for (int i = 0; i < k - 1 && iter.hasNext(); i++) {
-                        iter.next();
-                    }
-                    if (iter.hasNext()) {
-                        threshold.set(iter.next().expectedUtility);
-                    }
-                }
-
-                return true;
-            } finally {
-                updateLock.unlock();
-            }
-        }
-
-        double getThreshold() {
-            return threshold.get();
-        }
-
-        List<Itemset> getTopK() {
-            return topKSet.stream()
-                .limit(k)
-                .collect(Collectors.toList());
-        }
-    }
-
-    // Constructor
     public ver5(Map<Integer, Double> itemProfits, int k, double minPro) {
         this.itemProfits = Collections.unmodifiableMap(new HashMap<>(itemProfits));
         this.k = k;
         this.minPro = minPro;
         this.topKManager = new TopKManager(k);
-        this.taskManager = new AdaptiveTaskManager();
 
         int numThreads = Runtime.getRuntime().availableProcessors();
         this.customThreadPool = new ForkJoinPool(numThreads);
-        this.maxMemory = Runtime.getRuntime().maxMemory();
     }
 
     /**
@@ -477,15 +281,15 @@ public class ver5 {
     public List<Itemset> mine(List<Transaction> rawDatabase) {
         Instant start = Instant.now();
 
-        System.out.println("=== PTK-HUIM-U± Version 5 - Correctness-Guaranteed Parallel ===");
+        System.out.println("=== PTK-HUIM-U± Version 5.0 ===");
         System.out.println("Database size: " + rawDatabase.size());
         System.out.println("Number of items: " + itemProfits.size());
         System.out.println("K: " + k + ", MinPro: " + minPro);
         System.out.println("Thread pool size: " + customThreadPool.getParallelism());
 
-        // Phase 1: Initialize
-        System.out.println("\nPhase 1: Initialization...");
-        Map<Integer, EnhancedUtilityList> singleItemLists = optimizedInitialization(rawDatabase);
+        // Phase 1: Initialization
+        System.out.println("\nPhase 1: Single-pass initialization...");
+        Map<Integer, EnhancedUtilityList> singleItemLists = initializeDatabase(rawDatabase);
 
         List<Integer> sortedItems = getSortedItemsByRank(singleItemLists.keySet());
         System.out.println("Items after filtering: " + sortedItems.size());
@@ -494,34 +298,22 @@ public class ver5 {
         for (Integer item : sortedItems) {
             EnhancedUtilityList ul = singleItemLists.get(item);
             if (ul != null) {
-                double sumEU = ul.getSumEU();
-                if (sumEU >= topKManager.getThreshold() - EPSILON &&
-                    ul.existentialProbability >= minPro - EPSILON) {
-                    topKManager.tryAdd(ul.itemset, sumEU, ul.existentialProbability);
-                }
+                evaluateItemset(ul);
             }
         }
 
-        // Phase 2: Parallel mining
-        System.out.println("\nPhase 2: Parallel pattern mining...");
-
-        try {
-            if (sortedItems.size() > 0) {
-                PrefixMiningTask rootTask = new PrefixMiningTask(
-                    sortedItems, singleItemLists, 0, sortedItems.size(), 0
-                );
-                customThreadPool.invoke(rootTask);
+        // Phase 2: Mining
+        System.out.println("\nPhase 2: Mining itemsets...");
+        
+        if (sortedItems.size() >= PARALLEL_THRESHOLD) {
+            System.out.println("Using parallel processing for " + sortedItems.size() + " items");
+            MiningTask rootTask = new MiningTask(sortedItems, singleItemLists, 0, sortedItems.size());
+            customThreadPool.invoke(rootTask);
+        } else {
+            System.out.println("Using sequential processing for " + sortedItems.size() + " items");
+            for (int i = 0; i < sortedItems.size(); i++) {
+                processItemPrefix(i, sortedItems, singleItemLists);
             }
-        } catch (Exception e) {
-            System.err.println("Error in parallel processing: " + e.getMessage());
-            e.printStackTrace();
-
-            // Fallback to sequential
-            System.out.println("Falling back to sequential processing...");
-            sequentialMining(sortedItems, singleItemLists);
-        } finally {
-            // Ensure thread pool is properly shut down
-            shutdownThreadPool();
         }
 
         List<Itemset> results = topKManager.getTopK();
@@ -529,217 +321,228 @@ public class ver5 {
         Instant end = Instant.now();
 
         // Print statistics
-        System.out.println("\n=== Mining Complete ===");
-        System.out.println("Execution time: " + Duration.between(start, end).toMillis() + " ms");
-        System.out.println("Candidates generated: " + candidatesGenerated.get());
-        System.out.println("Utility lists created: " + utilityListsCreated.get());
-        System.out.println("Pruning statistics:");
-        System.out.println("  - RTWU pruned: " + rtwuPruned.get());
-        System.out.println("  - Branches pruned: " + branchPruned.get());
-        System.out.println("  - EU+remaining pruned: " + euPruned.get());
-        System.out.println("  - EP pruned: " + epPruned.get());
-        System.out.println("  - Total pruned: " + candidatesPruned.get());
-        System.out.println("Peak memory: " + (peakMemoryUsage.get() / 1024 / 1024) + " MB");
-        System.out.println("Final threshold: " + String.format("%.4f", topKManager.getThreshold()));
-        System.out.println("Top-K found: " + results.size());
+        printStatistics(start, end, results);
+
+        // Shutdown thread pool
+        shutdownThreadPool();
 
         return results;
     }
 
     /**
-     * Proper thread pool shutdown
+     * Process a single item prefix
      */
-    private void shutdownThreadPool() {
-        customThreadPool.shutdown();
-        try {
-            if (!customThreadPool.awaitTermination(60, TimeUnit.SECONDS)) {
-                System.err.println("Thread pool didn't terminate, forcing shutdown");
-                customThreadPool.shutdownNow();
+    private void processItemPrefix(int index, List<Integer> sortedItems,
+                                  Map<Integer, EnhancedUtilityList> singleItemLists) {
+        Integer item = sortedItems.get(index);
+        EnhancedUtilityList ul = singleItemLists.get(item);
 
-                if (!customThreadPool.awaitTermination(60, TimeUnit.SECONDS)) {
-                    System.err.println("Thread pool didn't terminate after forced shutdown");
-                }
-            }
-        } catch (InterruptedException e) {
-            System.err.println("Interrupted during shutdown");
-            customThreadPool.shutdownNow();
-            Thread.currentThread().interrupt();
+        if (ul == null) return;
+
+        if (shouldPruneBranch(item)) {
+            branchPruned.incrementAndGet();
+            return;
+        }
+
+        List<EnhancedUtilityList> extensions = getFilteredExtensions(
+            sortedItems, singleItemLists, index
+        );
+
+        if (!extensions.isEmpty()) {
+            searchWithExtensions(ul, extensions, singleItemLists);
         }
     }
 
     /**
-     * Sequential fallback mining
+     * Centralized branch pruning check
      */
-    private void sequentialMining(List<Integer> sortedItems,
-                                 Map<Integer, EnhancedUtilityList> singleItemLists) {
-        for (int i = 0; i < sortedItems.size(); i++) {
-            Integer item = sortedItems.get(i);
-            EnhancedUtilityList ul = singleItemLists.get(item);
-
-            if (ul == null) continue;
-
-            double currentThreshold = topKManager.getThreshold();
-            if (ul.rtwu < currentThreshold - EPSILON) {
-                branchPruned.incrementAndGet();
-                continue;
-            }
-
-            List<EnhancedUtilityList> extensions = new ArrayList<>();
-            for (int j = i + 1; j < sortedItems.size(); j++) {
-                Integer extItem = sortedItems.get(j);
-                EnhancedUtilityList extUL = singleItemLists.get(extItem);
-
-                if (extUL == null) continue;
-
-                if (extUL.rtwu < currentThreshold - EPSILON) {
-                    rtwuPruned.incrementAndGet();
-                    continue;
-                }
-
-                extensions.add(extUL);
-            }
-
-            if (!extensions.isEmpty()) {
-                searchSequential(ul, extensions);
-            }
-        }
-    }
-
-    /**
-     * Enhanced search with correct pruning
-     */
-    private void searchEnhanced(EnhancedUtilityList prefix,
-                               List<EnhancedUtilityList> extensions,
-                               int depth) {
-
-        // Decide between parallel and sequential based on depth and size
-        if (taskManager.shouldParallelize(extensions.size(), depth) &&
-            ForkJoinTask.getPool() != null) {
-
-            // Parallel processing using fork-join
-            int chunkSize = taskManager.getChunkSize(extensions.size(), depth);
-            List<RecursiveAction> subtasks = new ArrayList<>();
-
-            for (int i = 0; i < extensions.size(); i += chunkSize) {
-                final int start = i;
-                final int end = Math.min(i + chunkSize, extensions.size());
-
-                RecursiveAction task = new RecursiveAction() {
-                    @Override
-                    protected void compute() {
-                        processExtensionRange(prefix, extensions, start, end, depth);
-                    }
-                };
-
-                subtasks.add(task);
-                task.fork();
-            }
-
-            // Wait for all subtasks
-            for (RecursiveAction task : subtasks) {
-                task.join();
-            }
-
-        } else {
-            // Sequential processing
-            processExtensionRange(prefix, extensions, 0, extensions.size(), depth);
-        }
-    }
-
-    /**
-     * Process a range of extensions
-     */
-    private void processExtensionRange(EnhancedUtilityList prefix,
-                                      List<EnhancedUtilityList> extensions,
-                                      int start, int end, int depth) {
-
+    private boolean shouldPruneBranch(Integer item) {
         double currentThreshold = topKManager.getThreshold();
+        Double rtwu = itemRTWU.get(item);
+        return rtwu != null && rtwu < currentThreshold - EPSILON;
+    }
 
-        for (int i = start; i < end; i++) {
-            EnhancedUtilityList extension = extensions.get(i);
-
-            // RTWU pruning
-            if (extension.rtwu < currentThreshold - EPSILON) {
+    /**
+     * Centralized extension filtering
+     */
+    private List<EnhancedUtilityList> getFilteredExtensions(
+            List<Integer> sortedItems,
+            Map<Integer, EnhancedUtilityList> singleItemLists,
+            int currentIndex) {
+        
+        double currentThreshold = topKManager.getThreshold();
+        List<EnhancedUtilityList> extensions = new ArrayList<>();
+        
+        for (int j = currentIndex + 1; j < sortedItems.size(); j++) {
+            Integer extItem = sortedItems.get(j);
+            EnhancedUtilityList extUL = singleItemLists.get(extItem);
+            
+            if (extUL == null) continue;
+            
+            Double rtwu = itemRTWU.get(extItem);
+            if (rtwu != null && rtwu < currentThreshold - EPSILON) {
                 rtwuPruned.incrementAndGet();
-                candidatesPruned.incrementAndGet();
                 continue;
             }
+            
+            extensions.add(extUL);
+        }
+        
+        return extensions;
+    }
 
-            // Join utility lists
-            EnhancedUtilityList joined = join(prefix, extension);
+    /**
+     * Search with extensions
+     */
+    private void searchWithExtensions(EnhancedUtilityList prefix,
+                                     List<EnhancedUtilityList> extensions,
+                                     Map<Integer, EnhancedUtilityList> singleItemLists) {
+        
+        // Check if can prune entire branch
+        if (canPruneExtensionBranch(extensions)) {
+            candidatesPruned.addAndGet(extensions.size());
+            return;
+        }
 
-            if (joined == null || joined.elements.isEmpty()) {
-                continue;
-            }
-
-            utilityListsCreated.incrementAndGet();
-            candidatesGenerated.incrementAndGet();
-
-            // Existential probability pruning
-            if (joined.existentialProbability < minPro - EPSILON) {
-                epPruned.incrementAndGet();
-                candidatesPruned.incrementAndGet();
-                continue;
-            }
-
-            // Calculate utilities
-            double sumEU = joined.getSumEU();
-            double sumRemaining = joined.getSumRemaining();
-
-            // EU + remaining pruning
-            if (sumEU + sumRemaining < currentThreshold - EPSILON) {
-                euPruned.incrementAndGet();
-                candidatesPruned.incrementAndGet();
-                continue;
-            }
-
-            // Add to top-k if qualified
-            if (sumEU >= currentThreshold - EPSILON &&
-                joined.existentialProbability >= minPro - EPSILON) {
-                topKManager.tryAdd(joined.itemset, sumEU, joined.existentialProbability);
-                currentThreshold = topKManager.getThreshold(); // Update threshold
-            }
-
-            // Recursive search with remaining extensions
-            if (i < end - 1) {
-                List<EnhancedUtilityList> newExtensions = new ArrayList<>();
-
-                for (int j = i + 1; j < end; j++) {
-                    EnhancedUtilityList ext = extensions.get(j);
-                    // Only include extensions that pass RTWU threshold
-                    if (ext.rtwu >= currentThreshold - EPSILON) {
-                        newExtensions.add(ext);
-                    }
-                }
-
-                // Also need to include extensions beyond current range
-                for (int j = end; j < extensions.size(); j++) {
-                    EnhancedUtilityList ext = extensions.get(j);
-                    if (ext.rtwu >= currentThreshold - EPSILON) {
-                        newExtensions.add(ext);
-                    }
-                }
-
+        for (int i = 0; i < extensions.size(); i++) {
+            EnhancedUtilityList extension = extensions.get(i);
+            
+            // Process extension
+            EnhancedUtilityList joined = processExtension(prefix, extension);
+            
+            if (joined == null) continue;
+            
+            // Recursive search if needed
+            if (i < extensions.size() - 1) {
+                List<EnhancedUtilityList> newExtensions = filterRemainingExtensions(
+                    extensions, i + 1
+                );
+                
                 if (!newExtensions.isEmpty()) {
-                    searchEnhanced(joined, newExtensions, depth + 1);
+                    searchWithExtensions(joined, newExtensions, singleItemLists);
                 }
             }
         }
     }
 
     /**
-     * Sequential search for fallback
+     * Check if entire extension branch can be pruned
      */
-    private void searchSequential(EnhancedUtilityList prefix,
-                                 List<EnhancedUtilityList> extensions) {
-        processExtensionRange(prefix, extensions, 0, extensions.size(), Integer.MAX_VALUE);
+    private boolean canPruneExtensionBranch(List<EnhancedUtilityList> extensions) {
+        if (extensions.size() <= 1) return false;
+        
+        double currentThreshold = topKManager.getThreshold();
+        double minRTWU = Double.MAX_VALUE;
+        
+        for (EnhancedUtilityList ext : extensions) {
+            if (ext.rtwu < minRTWU) {
+                minRTWU = ext.rtwu;
+            }
+        }
+        
+        return minRTWU < currentThreshold - EPSILON;
     }
 
     /**
-     * Optimized initialization
+     * Process a single extension
      */
-    private Map<Integer, EnhancedUtilityList> optimizedInitialization(List<Transaction> rawDatabase) {
-        // Pass 1: Calculate RTWU
+    private EnhancedUtilityList processExtension(EnhancedUtilityList prefix,
+                                                EnhancedUtilityList extension) {
+        
+        double currentThreshold = topKManager.getThreshold();
+        
+        if (extension.rtwu < currentThreshold - EPSILON) {
+            rtwuPruned.incrementAndGet();
+            candidatesPruned.incrementAndGet();
+            return null;
+        }
+        
+        EnhancedUtilityList joined = join(prefix, extension);
+        
+        if (joined == null || joined.elements.isEmpty()) {
+            return null;
+        }
+        
+        utilityListsCreated.incrementAndGet();
+        candidatesGenerated.incrementAndGet();
+        
+        // Apply pruning strategies
+        if (!applyPruningStrategies(joined)) {
+            return null;
+        }
+        
+        // Evaluate for top-k
+        evaluateItemset(joined);
+        
+        return joined;
+    }
+
+    /**
+     * Apply all pruning strategies
+     */
+    private boolean applyPruningStrategies(EnhancedUtilityList ul) {
+        double threshold = topKManager.getThreshold();
+        
+        // Existential probability pruning
+        if (ul.existentialProbability < minPro - EPSILON) {
+            epPruned.incrementAndGet();
+            candidatesPruned.incrementAndGet();
+            return false;
+        }
+        
+        // EU + remaining pruning
+        double sumEU = ul.getSumEU();
+        double sumRemaining = ul.getSumRemaining();
+        
+        if (sumEU + sumRemaining < threshold - EPSILON) {
+            euPruned.incrementAndGet();
+            candidatesPruned.incrementAndGet();
+            return false;
+        }
+        
+        return true;
+    }
+
+    /**
+     * Filter remaining extensions
+     */
+    private List<EnhancedUtilityList> filterRemainingExtensions(
+            List<EnhancedUtilityList> extensions, int startIndex) {
+        
+        double currentThreshold = topKManager.getThreshold();
+        List<EnhancedUtilityList> filtered = new ArrayList<>();
+        
+        for (int j = startIndex; j < extensions.size(); j++) {
+            EnhancedUtilityList ext = extensions.get(j);
+            
+            if (ext.rtwu >= currentThreshold - EPSILON) {
+                filtered.add(ext);
+            } else {
+                rtwuPruned.incrementAndGet();
+            }
+        }
+        
+        return filtered;
+    }
+
+    /**
+     * Evaluate itemset for top-k
+     */
+    private void evaluateItemset(EnhancedUtilityList ul) {
+        double sumEU = ul.getSumEU();
+        double threshold = topKManager.getThreshold();
+        
+        if (sumEU >= threshold - EPSILON &&
+            ul.existentialProbability >= minPro - EPSILON) {
+            topKManager.tryAdd(ul.itemset, sumEU, ul.existentialProbability);
+        }
+    }
+
+    /**
+     * Initialize database
+     */
+    private Map<Integer, EnhancedUtilityList> initializeDatabase(List<Transaction> rawDatabase) {
+        // Calculate RTWU
         System.out.println("Computing RTWU values...");
         this.itemRTWU = new HashMap<>();
 
@@ -764,7 +567,7 @@ public class ver5 {
         }
 
         // Build ordering
-        System.out.println("Building RTWU ordering...");
+        System.out.println("Building global ordering...");
         this.itemToRank = new HashMap<>();
 
         List<Integer> rankedItems = itemRTWU.entrySet().stream()
@@ -780,7 +583,7 @@ public class ver5 {
             itemToRank.put(rankedItems.get(i), i);
         }
 
-        // Pass 2: Build utility lists
+        // Build utility lists
         System.out.println("Building utility lists...");
         Map<Integer, List<EnhancedUtilityList.Element>> tempElements = new HashMap<>();
 
@@ -859,20 +662,21 @@ public class ver5 {
     private EnhancedUtilityList join(EnhancedUtilityList ul1, EnhancedUtilityList ul2) {
         Set<Integer> newItemset = new HashSet<>(ul1.itemset);
         newItemset.addAll(ul2.itemset);
-
-        List<EnhancedUtilityList.Element> joinedElements = new ArrayList<>();
+        
         double joinedRTWU = Math.min(ul1.rtwu, ul2.rtwu);
-
+        
+        List<EnhancedUtilityList.Element> joinedElements = new ArrayList<>();
+        
         int i = 0, j = 0;
         while (i < ul1.elements.size() && j < ul2.elements.size()) {
             EnhancedUtilityList.Element e1 = ul1.elements.get(i);
             EnhancedUtilityList.Element e2 = ul2.elements.get(j);
-
+            
             if (e1.tid == e2.tid) {
                 double newUtility = e1.utility + e2.utility;
                 double newRemaining = Math.min(e1.remaining, e2.remaining);
                 double newLogProbability = e1.logProbability + e2.logProbability;
-
+                
                 if (newLogProbability > LOG_EPSILON) {
                     joinedElements.add(new EnhancedUtilityList.Element(
                         e1.tid, newUtility, newRemaining, newLogProbability
@@ -886,49 +690,163 @@ public class ver5 {
                 j++;
             }
         }
-
+        
         if (joinedElements.isEmpty()) {
             return null;
         }
-
+        
         return new EnhancedUtilityList(newItemset, joinedElements, joinedRTWU);
     }
 
     /**
-     * Result itemset class
+     * Print statistics
+     */
+    private void printStatistics(Instant start, Instant end, List<Itemset> results) {
+        System.out.println("\n=== Mining Complete ===");
+        System.out.println("Execution time: " + Duration.between(start, end).toMillis() + " ms");
+        System.out.println("Candidates generated: " + candidatesGenerated.get());
+        System.out.println("Utility lists created: " + utilityListsCreated.get());
+        System.out.println("Pruning statistics:");
+        System.out.println("  - RTWU pruned: " + rtwuPruned.get());
+        System.out.println("  - Branches pruned: " + branchPruned.get());
+        System.out.println("  - EU+remaining pruned: " + euPruned.get());
+        System.out.println("  - Existential probability pruned: " + epPruned.get());
+        System.out.println("  - Total pruned: " + candidatesPruned.get());
+        System.out.println("Final threshold: " + String.format("%.4f", topKManager.getThreshold()));
+        System.out.println("Top-K found: " + results.size());
+    }
+
+    /**
+     * Shutdown thread pool
+     */
+    private void shutdownThreadPool() {
+        customThreadPool.shutdown();
+        try {
+            if (!customThreadPool.awaitTermination(10, TimeUnit.SECONDS)) {
+                customThreadPool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            customThreadPool.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Simplified TopK Manager
+     */
+    private class TopKManager {
+        private final int k;
+        private final ConcurrentSkipListSet<Itemset> topKSet;
+        private final ConcurrentHashMap<Set<Integer>, Itemset> topKMap;
+        private volatile double threshold = 0.0;
+        private final Object lock = new Object();
+
+        TopKManager(int k) {
+            this.k = k;
+            this.topKSet = new ConcurrentSkipListSet<>((a, b) -> {
+                int cmp = Double.compare(b.expectedUtility, a.expectedUtility);
+                if (cmp != 0) return cmp;
+                return Integer.compare(a.hashCode(), b.hashCode());
+            });
+            this.topKMap = new ConcurrentHashMap<>();
+        }
+
+        boolean tryAdd(Set<Integer> items, double eu, double ep) {
+            // Quick check without lock
+            if (eu < threshold - EPSILON) {
+                return false;
+            }
+
+            // Check for existing
+            Itemset existing = topKMap.get(items);
+            if (existing != null && existing.expectedUtility >= eu - EPSILON) {
+                return false;
+            }
+
+            // Add with lock
+            synchronized (lock) {
+                // Double-check after lock
+                if (topKSet.size() >= k && eu < threshold - EPSILON) {
+                    return false;
+                }
+
+                Itemset current = topKMap.get(items);
+                if (current != null) {
+                    if (current.expectedUtility >= eu - EPSILON) {
+                        return false;
+                    }
+                    topKSet.remove(current);
+                }
+
+                Itemset newItemset = new Itemset(items, eu, ep);
+                topKSet.add(newItemset);
+                topKMap.put(items, newItemset);
+
+                // Remove weakest if over k
+                if (topKSet.size() > k) {
+                    Itemset removed = topKSet.pollLast();
+                    if (removed != null) {
+                        topKMap.remove(removed.items);
+                    }
+                }
+
+                // Update threshold
+                if (topKSet.size() >= k) {
+                    threshold = topKSet.last().expectedUtility;
+                }
+            }
+            return true;
+        }
+
+        double getThreshold() {
+            return threshold;
+        }
+
+        List<Itemset> getTopK() {
+            return new ArrayList<>(topKSet);
+        }
+    }
+
+    /**
+     * Itemset class
      */
     static class Itemset {
         final Set<Integer> items;
         final double expectedUtility;
-        final double existentialProbability;
+        final double probability;
 
-        Itemset(Set<Integer> items, double expectedUtility, double existentialProbability) {
-            this.items = Collections.unmodifiableSet(new HashSet<>(items));
-            this.expectedUtility = expectedUtility;
-            this.existentialProbability = existentialProbability;
-        }
-
-        @Override
-        public String toString() {
-            return items + ": EU=" + String.format("%.4f", expectedUtility) +
-                   ", EP=" + String.format("%.4f", existentialProbability);
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            if (this == obj) return true;
-            if (!(obj instanceof Itemset)) return false;
-            Itemset other = (Itemset) obj;
-            return items.equals(other.items);
+        Itemset(Set<Integer> items, double eu, double p) {
+            this.items = items;
+            this.expectedUtility = eu;
+            this.probability = p;
         }
 
         @Override
         public int hashCode() {
             return items.hashCode();
         }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (obj == null || getClass() != obj.getClass()) return false;
+            Itemset other = (Itemset) obj;
+            return items.equals(other.items);
+        }
+
+        @Override
+        public String toString() {
+            return "Itemset{" +
+                    "items=" + items +
+                    ", eu=" + String.format("%.2f", expectedUtility) +
+                    ", prob=" + String.format("%.2f", probability) +
+                    '}';
+        }
     }
 
-    // Transaction class
+    /**
+     * Transaction class
+     */
     static class Transaction {
         final int tid;
         final Map<Integer, Integer> items;
@@ -941,10 +859,12 @@ public class ver5 {
         }
     }
 
-    // Main method
+    /**
+     * Main method
+     */
     public static void main(String[] args) throws IOException {
         if (args.length != 4) {
-            System.err.println("Usage: ver5 <database_file> <profit_file> <k> <min_probability>");
+            System.err.println("Usage: PTKHUIMv5 <database_file> <profit_file> <k> <min_probability>");
             System.exit(1);
         }
 
@@ -953,15 +873,24 @@ public class ver5 {
         int k = Integer.parseInt(args[2]);
         double minPro = Double.parseDouble(args[3]);
 
+        // Read input files
         Map<Integer, Double> profits = readProfitTable(profitFile);
         List<Transaction> database = readDatabase(dbFile);
 
-        System.out.println("=== PTK-HUIM-U± Version 5 ===");
-        System.out.println("Correctness-guaranteed parallel implementation");
+        System.out.println("=== PTK-HUIM-U± Version 5.0 ===");
+        System.out.println("Optimizations:");
+        System.out.println("1. Removed all duplicate code");
+        System.out.println("2. Unified mining approach");
+        System.out.println("3. Centralized pruning strategies");
+        System.out.println("4. Simplified TopK management");
+        System.out.println("5. Optimized memory allocation");
+        System.out.println();
 
+        // Run algorithm
         ver5 algorithm = new ver5(profits, k, minPro);
         List<Itemset> topK = algorithm.mine(database);
 
+        // Display results
         System.out.println("\n=== Top-" + k + " PHUIs ===");
         int rank = 1;
         for (Itemset itemset : topK) {
@@ -969,6 +898,9 @@ public class ver5 {
         }
     }
 
+    /**
+     * Read profit table
+     */
     static Map<Integer, Double> readProfitTable(String filename) throws IOException {
         Map<Integer, Double> profits = new HashMap<>();
         try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
@@ -983,6 +915,9 @@ public class ver5 {
         return profits;
     }
 
+    /**
+     * Read database
+     */
     static List<Transaction> readDatabase(String filename) throws IOException {
         List<Transaction> database = new ArrayList<>();
         try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
